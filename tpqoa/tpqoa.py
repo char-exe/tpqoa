@@ -136,9 +136,24 @@ class tpqoa(object):
         self.suffix = '.000000000Z'
         self.stop_stream = False
 
+    def _raise_on_error(self, response):
+        ''' Raises a descriptive exception if the API response contains an error. '''
+        try:
+            raw = json.loads(response.raw_body)
+        except Exception:
+            return
+        if 'errorMessage' in raw:
+            raise Exception(
+                'API Error (HTTP {}): {}'.format(
+                    response.status,
+                    raw.get('errorMessage', 'Unknown error')
+                )
+            )
+
     def get_instruments(self):
         ''' Retrieves and returns all instruments for the given account. '''
         resp = self.ctx.account.instruments(self.account_id)
+        self._raise_on_error(resp)
         instruments = resp.get('instruments')
         instruments = [ins.dict() for ins in instruments]
         instruments = [(ins['displayName'], ins['name'])
@@ -148,6 +163,7 @@ class tpqoa(object):
     def get_prices(self, instrument):
         ''' Returns the current BID/ASK prices for instrument. '''
         r = self.ctx.pricing.get(self.account_id, instruments=instrument)
+        self._raise_on_error(r)
         r = json.loads(r.raw_body)
         bid = float(r['prices'][0]['closeoutBid'])
         ask = float(r['prices'][0]['closeoutAsk'])
@@ -405,21 +421,47 @@ class tpqoa(object):
             response = self.ctx.account.get(self.account_id)
         else:
             response = self.ctx.account.summary(self.account_id)
+        self._raise_on_error(response)
         raw = response.get('account')
         return raw.dict()
 
     def get_transaction(self, tid=0):
         ''' Retrieves and returns transaction data. '''
         response = self.ctx.transaction.get(self.account_id, tid)
+        self._raise_on_error(response)
         transaction = response.get('transaction')
         return transaction.dict()
 
-    def get_transactions(self, tid=0):
-        ''' Retrieves and returns transactions data. '''
-        response = self.ctx.transaction.since(self.account_id, id=tid)
+    def get_transactions(self, tid=0, count=100):
+        ''' Retrieves and returns the most recent transactions.
+
+        Parameters
+        ==========
+        tid: int
+            only return transactions with id >= tid (0 = all)
+        count: int
+            maximum number of most-recent transactions to return (default 100)
+        '''
+        # Find the latest transaction ID from the account summary
+        summary = self.ctx.account.summary(self.account_id)
+        self._raise_on_error(summary)
+        last_tid = int(summary.get('account').dict().get('lastTransactionID', 0))
+
+        # Start far enough back to capture at least `count` transactions
+        start_tid = max(tid, last_tid - (count * 10))
+
+        response = self.ctx.transaction.since(self.account_id, id=start_tid)
+        raw = json.loads(response.raw_body)
+        if 'errorMessage' in raw:
+            raise Exception(
+                'API Error (HTTP {}): {}'.format(
+                    response.status,
+                    raw.get('errorMessage', 'Unknown error')
+                )
+            )
         transactions = response.get('transactions')
         transactions = [t.dict() for t in transactions]
-        return transactions
+        return transactions[-count:]
 
     def print_transactions(self, tid=0):
         ''' Prints basic transactions data. '''
